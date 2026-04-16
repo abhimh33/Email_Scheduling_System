@@ -1,150 +1,48 @@
-import { Worker, Job } from "bullmq";
-import nodemailer from "nodemailer";
+import { Worker } from "bullmq";
 import { Resend } from "resend";
 import { env } from "../config/env.js";
-import { redis, redisConnection } from "../config/redis.js";
+import { redisConnection } from "../config/redis.js";
 import { prisma } from "../db/prisma.js";
-import { incrementRateLimit } from "../utils/rateLimit.js";
-import { msUntilNextHour } from "../utils/time.js";
 
 // Initialize Resend client
 const resend = new Resend(env.resendApiKey);
-
-// Create transport based on EMAIL_MODE
-const createTransport = () => {
-  if (env.emailMode === "test") {
-    // Use Ethereal for testing with fake emails
-    return nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      auth: {
-        user: env.ethereal.user,
-        pass: env.ethereal.pass
-      }
-    });
-  } else {
-    // Use configured SMTP (Gmail) for production
-    // Try port 465 with SSL if 587 is blocked by Railway
-    return nodemailer.createTransport({
-      host: env.smtp.host,
-      port: env.smtp.port,
-      secure: env.smtp.secure,
-      auth: {
-        user: env.smtp.user,
-        pass: env.smtp.pass
-      },
-      // Add connection timeout and retry logic
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000
-    });
-  }
-};
-
-const transport = createTransport();
-
-const acquireGapSlot = async (sender: string) => {
-  const key = `email_gap:${sender}`;
-  const ok = await redis.set(key, Date.now().toString(), "PX", env.minDelayMs, "NX");
-  if (ok) {
-    return { ok: true, delayMs: 0 };
-  }
-  const ttl = await redis.pttl(key);
-  return { ok: false, delayMs: Math.max(ttl, env.minDelayMs) };
-};
-
-const moveJobToDelayed = async (job: Job, delayMs: number) => {
-  try {
-    const delayUntil = Date.now() + delayMs;
-    await job.moveToDelayed(delayUntil, job.token);
-  } catch (error: any) {
-    // If lock is missing, just log and continue - job will be retried
-    if (error.message?.includes('Missing lock')) {
-      console.log(`Job ${job.id} lock expired, will be retried automatically`);
-    } else {
-      throw error;
-    }
-  }
-};
 
 export const startEmailWorker = () => {
   const worker = new Worker(
     env.queueName,
     async (job) => {
       const emailId = job.data.emailId as string;
+      
+      console.log(`Processing email job: ${emailId}`);
+      
       const email = await prisma.email.findUnique({ where: { id: emailId } });
       if (!email) {
+        console.log(`Email ${emailId} not found in database`);
         return;
       }
 
       if (email.status === "sent" && email.providerMessageId) {
+        console.log(`Email ${emailId} already sent`);
         return;
       }
 
-      await prisma.emailJob.update({
-        where: { emailId },
-        data: { status: "processing" }
+      console.log(`Sending email to ${email.recipient}...`);
+
+      // Send email using Resend
+      const result = await resend.emails.send({
+        from: email.sender,
+        to: email.recipient,
+        subject: email.subject,
+        text: email.body
       });
 
-      const now = new Date();
-      const rate = await incrementRateLimit(email.sender, now);
-      if (rate.count > rate.limit) {
-        const delayMs = msUntilNextHour(now);
-        await prisma.emailJob.update({
-          where: { emailId },
-          data: { status: "delayed" }
-        });
-        await moveJobToDelayed(job, delayMs);
-        return;
+      if (result.error) {
+        console.error(`Resend error for ${emailId}:`, result.error);
+        throw new Error(`Resend error: ${result.error.message}`);
       }
 
-      const gap = await acquireGapSlot(email.sender);
-      if (!gap.ok) {
-        await prisma.emailJob.update({
-          where: { emailId },
-          data: { status: "delayed" }
-        });
-        await moveJobToDelayed(job, gap.delayMs);
-        return;
-      }
-
-      // Send email using Resend or SMTP based on configuration
-      let info;
-      let messageId;
-
-      if (env.resendApiKey && env.emailMode === "production") {
-        // Use Resend for production
-        const result = await resend.emails.send({
-          from: email.sender,
-          to: email.recipient,
-          subject: email.subject,
-          text: email.body
-        });
-
-        if (result.error) {
-          throw new Error(`Resend error: ${result.error.message}`);
-        }
-
-        messageId = result.data?.id || "";
-        console.log("📧 [RESEND] Email sent! Message ID:", messageId, "To:", email.recipient);
-      } else {
-        // Use SMTP (Ethereal for test, Gmail for production without Resend)
-        info = await transport.sendMail({
-          from: email.sender,
-          to: email.recipient,
-          subject: email.subject,
-          text: email.body
-        });
-
-        messageId = info.messageId;
-
-        // Log based on email mode
-        if (env.emailMode === "test") {
-          console.log("📧 [TEST MODE] Email sent! Preview at:", nodemailer.getTestMessageUrl(info));
-        } else {
-          console.log("📧 [PRODUCTION] Email sent! Message ID:", messageId, "To:", email.recipient);
-        }
-      }
+      const messageId = result.data?.id || "";
+      console.log("📧 [RESEND] Email sent! Message ID:", messageId, "To:", email.recipient);
 
       await prisma.email.update({
         where: { id: emailId },
@@ -162,28 +60,33 @@ export const startEmailWorker = () => {
     },
     {
       connection: redisConnection,
-      concurrency: env.worker.concurrency,
-      lockDuration: 30000, // 30 seconds lock duration
-      settings: {
-        backoffStrategy: () => env.worker.backoffMs
-      },
+      concurrency: 1, // Process one at a time to avoid rate limits
+      lockDuration: 60000, // 60 seconds
       removeOnComplete: { count: 100 },
       removeOnFail: { count: 500 }
     }
   );
 
-  worker.on("failed", async (job) => {
+  worker.on("failed", async (job, error) => {
     if (!job) return;
     const emailId = job.data.emailId as string;
+    console.error(`Job ${emailId} failed:`, error.message);
+    
     await prisma.email.update({
       where: { id: emailId },
       data: { status: "failed" }
-    });
+    }).catch(err => console.error("Failed to update email status:", err));
+    
     await prisma.emailJob.update({
       where: { emailId },
       data: { status: "failed", attempts: { increment: 1 } }
-    });
+    }).catch(err => console.error("Failed to update job status:", err));
   });
 
+  worker.on("completed", (job) => {
+    console.log(`Job ${job.id} completed successfully`);
+  });
+
+  console.log("Email worker started");
   return worker;
 };
