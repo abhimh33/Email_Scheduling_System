@@ -89,7 +89,8 @@
 | **PostgreSQL** | Primary database |
 | **BullMQ** | Job queue with delayed jobs |
 | **Redis** | Queue persistence & rate limiting |
-| **Nodemailer** | Email delivery (Ethereal for dev) |
+| **Resend** | Production email delivery |
+| **Nodemailer** | Email delivery (Ethereal for local dev) |
 | **JWT** | Authentication tokens |
 
 ### Frontend
@@ -110,16 +111,18 @@
 - Node.js 18+
 - PostgreSQL 14+
 - Redis 6+
-- Docker (optional, for Redis)
+- Docker (optional, for local Redis)
 
-### 1️⃣ Clone & Install
+### Local Development
+
+#### 1️⃣ Clone & Install
 
 ```bash
 git clone https://github.com/abhimh33/Email_Scheduling_System.git
 cd Email_Scheduling_System
 ```
 
-### 2️⃣ Backend Setup
+#### 2️⃣ Backend Setup
 
 ```bash
 cd backend
@@ -130,7 +133,7 @@ npx prisma migrate dev
 npm run dev
 ```
 
-### 3️⃣ Frontend Setup
+#### 3️⃣ Frontend Setup
 
 ```bash
 cd frontend
@@ -139,12 +142,29 @@ npm install
 npm run dev
 ```
 
-### 4️⃣ Access the App
+#### 4️⃣ Access the App
 
 | Service | URL |
 |---------|-----|
 | 🌐 Frontend | http://localhost:3000 |
 | 🔧 Backend API | http://localhost:4000 |
+
+### Production Deployment
+
+**Live Demo:** [https://email-scheduling-system.vercel.app](https://email-scheduling-system.vercel.app)
+
+| Service | Platform | Purpose |
+|---------|----------|---------|
+| Frontend | Vercel | Next.js hosting |
+| Backend | Railway | Express API + Worker |
+| Database | Railway | PostgreSQL |
+| Redis | Railway | BullMQ queue |
+| Email | Resend | Production email delivery |
+
+**Deployment Stack:**
+- Frontend: Vercel (auto-deploys from `main` branch)
+- Backend: Railway (includes PostgreSQL + Redis)
+- Email: Resend API (no SMTP port blocking issues)
 
 ---
 
@@ -163,17 +183,31 @@ REDIS_URL=redis://localhost:6379
 # JWT
 JWT_SECRET=your-secret-key
 
-# Google OAuth (optional)
+# Google OAuth
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
 
-# Email (Ethereal for development)
+# Email Mode: "test" for Ethereal (local dev) or "production" for Resend
+EMAIL_MODE=test
+
+# Resend API (for production)
+RESEND_API_KEY=re_your_api_key
+
+# SMTP Configuration (Gmail - fallback)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+
+# Ethereal (for local development)
 ETHEREAL_USER=your-ethereal-user
 ETHEREAL_PASS=your-ethereal-pass
 
-# Rate Limiting
-EMAILS_PER_HOUR=100
-MIN_DELAY_MS=500
+# Worker Configuration
+WORKER_CONCURRENCY=5
+WORKER_ATTEMPTS=3
+WORKER_BACKOFF_MS=5000
 ```
 
 </details>
@@ -182,9 +216,14 @@ MIN_DELAY_MS=500
 <summary><strong>Frontend (.env)</strong></summary>
 
 ```env
+# API URL (local or production)
 NEXT_PUBLIC_API_URL=http://localhost:4000
+
+# NextAuth
 NEXTAUTH_SECRET=your-nextauth-secret
 NEXTAUTH_URL=http://localhost:3000
+
+# Google OAuth
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
 ```
@@ -213,7 +252,7 @@ GOOGLE_CLIENT_SECRET=your-client-secret
                                  ▼
                         ┌─────────────────┐
                         │                 │
-                        │  Email Worker   │────▶ SMTP (Ethereal)
+                        │  Email Worker   │────▶ Resend API / Ethereal
                         │                 │
                         └─────────────────┘
 ```
@@ -266,24 +305,29 @@ GOOGLE_CLIENT_SECRET=your-client-secret
 
 ## 🧪 Testing the System
 
-1. **Login** via Google OAuth or create an account with email/password
-2. **Compose** an email with recipients, subject, and body
-3. **Schedule** for a future time (even 1 minute from now)
-4. **Observe** the email appear in "Scheduled" tab
-5. **Search** for emails using the search bar
-6. **Cancel** a scheduled email using the ❌ button
-7. **Duplicate** any email using the 📋 button
-8. **Restart** the backend server and verify emails continue sending
-9. **Check terminal** for Ethereal preview URLs to view sent emails
-10. **Trigger rate limit** by scheduling 100+ emails in one hour
+### Local Development (Ethereal Email)
 
-### 📧 Viewing Test Emails
+1. **Set EMAIL_MODE=test** in backend `.env`
+2. **Login** via Google OAuth or create an account
+3. **Compose** an email and schedule it
+4. **Check terminal** for Ethereal preview URLs: `https://ethereal.email/message/xxxxx`
+5. **Click the URL** to view the email in your browser (no real delivery)
 
-Since the app uses **Ethereal Email** (test SMTP), emails are not delivered to real inboxes. To preview sent emails:
+### Production (Resend)
 
-1. Check the backend terminal output
-2. Look for: `📧 Email sent! Preview at: https://ethereal.email/message/xxxxx`
-3. Click the URL to view the email content in your browser
+1. **Set EMAIL_MODE=production** and add `RESEND_API_KEY`
+2. **Resend free tier** only sends to your verified email
+3. **To send to anyone:** Verify a domain at [resend.com/domains](https://resend.com/domains)
+4. **Update sender** from `onboarding@resend.dev` to `noreply@yourdomain.com`
+
+### Testing Features
+
+- **Schedule** emails for 1-2 minutes from now
+- **Search** for emails using the search bar
+- **Cancel** scheduled emails using the ❌ button
+- **Duplicate** any email using the 📋 button
+- **Restart** the backend server and verify emails continue sending
+- **Check Railway logs** for `📧 [RESEND] Email sent!` messages
 
 ---
 
