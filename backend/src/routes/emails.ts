@@ -23,7 +23,8 @@ const scheduleSchema = z.object({
 router.post("/schedule", requireGoogleAuth, async (req: AuthedRequest, res) => {
   try {
     const payload = scheduleSchema.parse(req.body);
-    const sender = req.userEmail ?? "";
+    // Use Resend test email for sender (free tier)
+    const sender = "onboarding@resend.dev";
     const scheduledAt = new Date(payload.scheduledAt);
     const emails = await scheduleEmails(
       {
