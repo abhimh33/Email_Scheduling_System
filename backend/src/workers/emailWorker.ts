@@ -54,8 +54,17 @@ const acquireGapSlot = async (sender: string) => {
 };
 
 const moveJobToDelayed = async (job: Job, delayMs: number) => {
-  const delayUntil = Date.now() + delayMs;
-  await job.moveToDelayed(delayUntil, job.token);
+  try {
+    const delayUntil = Date.now() + delayMs;
+    await job.moveToDelayed(delayUntil, job.token);
+  } catch (error: any) {
+    // If lock is missing, just log and continue - job will be retried
+    if (error.message?.includes('Missing lock')) {
+      console.log(`Job ${job.id} lock expired, will be retried automatically`);
+    } else {
+      throw error;
+    }
+  }
 };
 
 export const startEmailWorker = () => {
@@ -154,6 +163,7 @@ export const startEmailWorker = () => {
     {
       connection: redisConnection,
       concurrency: env.worker.concurrency,
+      lockDuration: 30000, // 30 seconds lock duration
       settings: {
         backoffStrategy: () => env.worker.backoffMs
       },
