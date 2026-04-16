@@ -20,6 +20,7 @@ const createTransport = () => {
     });
   } else {
     // Use configured SMTP (Gmail) for production
+    // Try port 465 with SSL if 587 is blocked by Railway
     return nodemailer.createTransport({
       host: env.smtp.host,
       port: env.smtp.port,
@@ -27,7 +28,11 @@ const createTransport = () => {
       auth: {
         user: env.smtp.user,
         pass: env.smtp.pass
-      }
+      },
+      // Add connection timeout and retry logic
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
   }
 };
