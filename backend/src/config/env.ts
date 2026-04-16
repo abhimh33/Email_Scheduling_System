@@ -20,6 +20,7 @@ export const env = {
   jwtSecret: required("JWT_SECRET", "default-jwt-secret-change-in-production"),
   queueName: process.env.EMAIL_QUEUE_NAME ?? "email-queue",
   emailMode: process.env.EMAIL_MODE ?? "production", // "test" or "production"
+  resendApiKey: process.env.RESEND_API_KEY ?? "",
   worker: {
     concurrency: Number(process.env.WORKER_CONCURRENCY ?? 5),
     attempts: Number(process.env.WORKER_ATTEMPTS ?? 3),

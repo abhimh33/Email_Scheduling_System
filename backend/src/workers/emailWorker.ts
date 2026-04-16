@@ -1,10 +1,14 @@
 import { Worker, Job } from "bullmq";
 import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import { env } from "../config/env.js";
 import { redis, redisConnection } from "../config/redis.js";
 import { prisma } from "../db/prisma.js";
 import { incrementRateLimit } from "../utils/rateLimit.js";
 import { msUntilNextHour } from "../utils/time.js";
+
+// Initialize Resend client
+const resend = new Resend(env.resendApiKey);
 
 // Create transport based on EMAIL_MODE
 const createTransport = () => {
@@ -95,18 +99,42 @@ export const startEmailWorker = () => {
         return;
       }
 
-      const info = await transport.sendMail({
-        from: email.sender,
-        to: email.recipient,
-        subject: email.subject,
-        text: email.body
-      });
+      // Send email using Resend or SMTP based on configuration
+      let info;
+      let messageId;
 
-      // Log based on email mode
-      if (env.emailMode === "test") {
-        console.log("📧 [TEST MODE] Email sent! Preview at:", nodemailer.getTestMessageUrl(info));
+      if (env.resendApiKey && env.emailMode === "production") {
+        // Use Resend for production
+        const result = await resend.emails.send({
+          from: email.sender,
+          to: email.recipient,
+          subject: email.subject,
+          text: email.body
+        });
+
+        if (result.error) {
+          throw new Error(`Resend error: ${result.error.message}`);
+        }
+
+        messageId = result.data?.id || "";
+        console.log("📧 [RESEND] Email sent! Message ID:", messageId, "To:", email.recipient);
       } else {
-        console.log("📧 [PRODUCTION] Email sent! Message ID:", info.messageId, "To:", email.recipient);
+        // Use SMTP (Ethereal for test, Gmail for production without Resend)
+        info = await transport.sendMail({
+          from: email.sender,
+          to: email.recipient,
+          subject: email.subject,
+          text: email.body
+        });
+
+        messageId = info.messageId;
+
+        // Log based on email mode
+        if (env.emailMode === "test") {
+          console.log("📧 [TEST MODE] Email sent! Preview at:", nodemailer.getTestMessageUrl(info));
+        } else {
+          console.log("📧 [PRODUCTION] Email sent! Message ID:", messageId, "To:", email.recipient);
+        }
       }
 
       await prisma.email.update({
@@ -114,7 +142,7 @@ export const startEmailWorker = () => {
         data: {
           status: "sent",
           sentAt: new Date(),
-          providerMessageId: info.messageId
+          providerMessageId: messageId
         }
       });
 
